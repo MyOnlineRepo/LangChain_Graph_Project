@@ -1,6 +1,6 @@
 # LangChain / LangGraph — Überblick
 
-Stand: 2026-09-16 · langchain 1.4.1 · langgraph 1.2.11 · Python 3.14.3
+Stand: 2026-09-17 · langchain 1.4.1 · langgraph 1.2.11 · Python 3.14.3
 
 ---
 
@@ -88,17 +88,35 @@ für Chunking und Embeddings drauf statt für den Graph.
 D:\Git\LangChain_Graph_Project
 ├─ pyproject.toml / uv.lock     uv, src-Layout, ruff + pytest
 ├─ CLAUDE.md                    Konventionen für künftige Sessions
+├─ README.md                    Kurzeinstieg
 ├─ OVERVIEW.md                  dieses Dokument
+├─ LICENSE                      MIT
 ├─ .env.example                 ANTHROPIC_API_KEY, optional LangSmith
-├─ src/lcgraph/__init__.py      zentrale MODEL-ID + load_env()
-└─ examples/
-   ├─ 01_agent.py               create_agent mit zwei Tools
-   ├─ 02_state_graph.py         State + Reducer + bedingtes Routing
-   └─ 03_durable_hitl.py        SqliteSaver + interrupt + resume
+├─ src/lcgraph/
+│  ├─ __init__.py               MODEL, MODEL_SCHNELL, load_env(), nur_text()
+│  └─ embeddings.py             fastembed als LangChain-Embeddings
+├─ examples/
+│  ├─ 01_agent.py               create_agent mit zwei Tools
+│  ├─ 02_state_graph.py         State + Reducer + bedingtes Routing
+│  ├─ 03_durable_hitl.py        SqliteSaver + interrupt + resume
+│  ├─ 04_supervisor.py          Multi-Agent-Supervisor, Routing im Zyklus
+│  ├─ 05_mcp_tools.py           MCPAdapter → Tools → create_agent
+│  ├─ mcp_projekt_server.py     der MCP-Server dazu (kein eigener Lauf)
+│  ├─ 06_rag_ingest.py          Korpus → Chunks → Chroma-Index
+│  └─ 07_rag_graph.py           selbstkorrigierendes RAG, zwei Zyklen
+├─ experimente/                 Wegwerf-Skripte zum Begreifen (ohne API-Key)
+│  ├─ exp1_reducer.py           mit/ohne Reducer im Vergleich
+│  ├─ exp2_routing.py           Kante ins Leere: Compile- vs. Laufzeit
+│  └─ exp3_stream.py            stream_mode "updates" vs. "values"
+└─ .claude/skills/              gevendorte Agent-Skills (MIT, mattpocock)
 ```
 
 Die Beispiele sind bewusst aufsteigend: 01 zeigt, wie wenig man braucht; 02 zeigt, was
-darunter liegt; 03 zeigt, was LangGraph von einer for-Schleife unterscheidet.
+darunter liegt; 03 zeigt, was LangGraph von einer for-Schleife unterscheidet. 04 bis 07
+sind die drei Ausbaurichtungen aus der vormals offenen Entscheidung (siehe Abschnitt 6).
+
+Wichtig für 07: erst `06_rag_ingest.py` laufen lassen, sonst fehlt der Index. Der landet
+unter `.chroma/` und ist gitignored — er entsteht in Sekunden neu.
 
 ### Setup
 
@@ -112,20 +130,54 @@ uv run python examples/01_agent.py
 
 ### Verifikationsstand
 
-- Alle Imports auflösbar, `ruff check` clean.
-- Ein Minimalgraph mit Checkpointer lief end-to-end (State korrekt akkumuliert,
-  `get_state` liefert den Snapshot).
-- Die drei Beispieldateien selbst wurden **nicht** ausgeführt — dafür fehlt der API-Key.
+Stand 2026-09-17: **alle Beispiele wurden ausgeführt**, `ruff check` und `ruff format` clean.
+
+- 01–03 laufen. Bei 03 wurde zusätzlich aus einem *fremden* Prozess nachgewiesen, dass der
+  State die Prozessgrenze überlebt: fünf Checkpoints in der SQLite-DB, einer pro Superstep.
+- 04–07 laufen. Der RAG-Graph wurde gegen eine Frage getestet, deren Antwort **nicht** im
+  Korpus steht: drei Umformulierungen, Bremse gegriffen, Grounding-Check auf `gedeckt=False`
+  — und die Antwort sagt, dass die Information fehlt, statt zu halluzinieren.
+- Gesamtkosten aller Läufe: deutlich unter einem Euro (Sonnet 5 + Haiku 4.5 gemischt).
+
+Zwei Fallstricke, die dabei auffielen:
+
+- **Prefill.** Reicht man in einem Multi-Agent-Graph die Nachrichtenliste an den nächsten
+  Worker weiter, endet sie auf einer Assistant-Nachricht. Aktuelle Claude-Modelle lehnen das
+  mit HTTP 400 ab. Jeder Worker braucht einen expliziten Auftrag als User-Nachricht.
+- **`content` ist keine Zeichenkette.** Bei denkenden Modellen ist es eine Liste aus
+  Thinking- und Text-Blöcken. Ungefiltert weitergereicht kostet das Tokens für Signatur-Blobs.
+  Dafür gibt es `nur_text()`.
 
 ---
 
-## 6. Offene Entscheidung
+## 6. Entschieden — alle drei Richtungen gebaut
 
-Nächster Ausbauschritt — eine der drei Richtungen:
+Die vormals offene Entscheidung ist erledigt: statt einer Richtung wurden alle drei gebaut.
 
-- **Multi-Agent-Supervisor** — Routing zwischen spezialisierten Agenten, keine Daten nötig.
-- **MCP-Tool-Anbindung** — externe Tools über den Standard, keine Daten nötig.
-- **RAG-Graph** — braucht Korpus + Embedding-Entscheidung (siehe Abschnitt 4).
+| Richtung | Beispiel | Kern |
+|---|---|---|
+| **Multi-Agent-Supervisor** | `04_supervisor.py` | Supervisor routet zyklisch zwischen drei Spezialisten, `MAX_SCHRITTE` bremst. Haiku entscheidet, Sonnet arbeitet. |
+| **MCP-Tool-Anbindung** | `05_mcp_tools.py` + `mcp_projekt_server.py` | `MCPAdapter` übersetzt MCP-Tools in LangChain-Tools. Agent und Werkzeuge wissen nichts voneinander. |
+| **RAG-Graph** | `06_rag_ingest.py` + `07_rag_graph.py` | Zwei Zyklen: Retrieval-Korrektur (umformulieren → neu suchen) und Grounding-Check (Antwort nicht gedeckt → neu schreiben). |
+
+### Die RAG-Entscheidungen aus Abschnitt 4 — so gefallen
+
+- **Korpus:** das Markdown, das ohnehin im Repo liegt (Projektdokus + die 25 Skill-Dateien).
+  Kein Crawler, kein Download, reproduzierbar — und jede Antwort ist gegenprüfbar.
+- **Embedding-Modell:** `paraphrase-multilingual-MiniLM-L12-v2` über `fastembed`, lokal auf
+  der CPU, 220 MB. **Kein zweiter API-Key.** Mehrsprachig, damit deutsche Fragen die
+  englischen Skill-Texte finden.
+- **Vector Store:** Chroma, lokal nach `.chroma/` persistiert.
+- **Bewusstes Nicht-Ziel:** Chunk-Tuning. Eine Konfiguration (1200/150), fertig — die Zeit
+  gehört dem Graphen, nicht der Chunk-Größe.
+
+### Was als Nächstes offen ist
+
+- **07 mit Checkpointer und HITL verbinden.** Scheitert der Grounding-Check zweimal, könnte
+  der Graph per `interrupt` nachfragen, statt still aufzugeben — das wäre 03 und 07 vereint.
+- **Tests.** `pytest` ist als Dev-Abhängigkeit installiert, aber es gibt kein `tests/`.
+- **Konsolen-Encoding.** Deutsche Ausgaben brauchen unter Windows `PYTHONIOENCODING=utf-8`,
+  sonst wird aus `bewölkt` ein `bew?lkt`. Ein Zweizeiler in `load_env()` würde das erledigen.
 
 ---
 

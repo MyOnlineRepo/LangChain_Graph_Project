@@ -9,3 +9,6 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+
+# Generierter Vektor-Index (entsteht per 06_rag_ingest.py neu)
+.chroma/
